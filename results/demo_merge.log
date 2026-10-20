@@ -1,0 +1,31 @@
+==============================================================================
+PART 3 · merging partial results: 4 partitions, built independently
+==============================================================================
+
+  4 partitions of 80,000 clicks each; returning users appear in several partitions
+
+  worker 0: sketched 80,000 clicks   estimate   57,116   exact  55,145   → sends 640 bytes
+  worker 1: sketched 80,000 clicks   estimate   53,657   exact  55,089   → sends 640 bytes
+  worker 2: sketched 80,000 clicks   estimate   56,364   exact  55,010   → sends 640 bytes
+  worker 3: sketched 80,000 clicks   estimate   56,403   exact  55,117   → sends 640 bytes
+
+  first 12 of 1,024 registers   (green = the partition holding the max)
+
+                  0   1   2   3   4   5   6   7   8   9  10  11
+  partition 0     5   6   8  10   5   6   6   8   9   7   5   8
+  partition 1     6   7  10   6   7   9   6   6   9   7   6   6
+  partition 2     7   7  10   6   7   9   7   7   4   8   6   6
+  partition 3     7   7   8  12   8   6   5   7   5   8   8   7
+  -------------------------------------------------------------
+  max-merge       7   7  10  12   8   9   7   8   9   8   8   8
+  one pass        7   7  10  12   8   9   7   8   9   8   8   8   ← one machine reading everything
+
+  merged == one pass over all data?  YES, all 1024 registers identical
+
+  distinct users across all partitions         value     error
+  exact                                      160,337
+  HLL, merged from 4 × 640-byte sketches     164,468    +2.58%
+  adding the 4 per-partition counts          220,361    +37.4%  ← distinct counts don't add
+
+  max is associative, commutative and idempotent → any split, any order, any overlap.
+  So the reduce step ships 640 bytes per worker instead of every distinct id.

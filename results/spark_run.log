@@ -1,0 +1,93 @@
+starting Spark …
+Picked up JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStoreType=JKS -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=41275 -Dhttp.nonProxyHosts=localhost|127.0.0.1|::1|127.*|0.*|::|169.254.*|api.anthropic.com|api-staging.anthropic.com|api-pr-preview.anthropic.com|mcp-proxy.anthropic.com|mcp-proxy-staging.anthropic.com|registry.npmjs.org|jsr.io|npm.jsr.io|pypi.org|files.pythonhosted.org|index.crates.io|proxy.golang.org|host.docker.internal|10.*|172.16.*|172.17.*|172.18.*|172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|172.29.*|172.30.*|172.31.*|192.168.*|100.64.0.0/10|*.svc.cluster.local|*.svc.cluster.local -Djdk.http.auth.tunneling.disabledSchemes= -Djdk.http.auth.proxying.disabledSchemes=
+Picked up JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStoreType=JKS -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=41275 -Dhttp.nonProxyHosts=localhost|127.0.0.1|::1|127.*|0.*|::|169.254.*|api.anthropic.com|api-staging.anthropic.com|api-pr-preview.anthropic.com|mcp-proxy.anthropic.com|mcp-proxy-staging.anthropic.com|registry.npmjs.org|jsr.io|npm.jsr.io|pypi.org|files.pythonhosted.org|index.crates.io|proxy.golang.org|host.docker.internal|10.*|172.16.*|172.17.*|172.18.*|172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|172.29.*|172.30.*|172.31.*|192.168.*|100.64.0.0/10|*.svc.cluster.local|*.svc.cluster.local -Djdk.http.auth.tunneling.disabledSchemes= -Djdk.http.auth.proxying.disabledSchemes=
+WARNING: Using incubator modules: jdk.incubator.vector
+Using Spark's default log4j profile: org/apache/spark/log4j2-defaults.properties
+26/10/19 14:34:08 WARN Utils: Your hostname, vm, resolves to a loopback address: 127.0.0.1; using 192.0.2.2 instead (on interface eth0)
+26/10/19 14:34:08 WARN Utils: Set SPARK_LOCAL_IP if you need to bind to another address
+Using Spark's default log4j profile: org/apache/spark/log4j2-defaults.properties
+Setting default log level to "WARN".
+To adjust logging level use sc.setLogLevel(newLevel). For SparkR, use setLogLevel(newLevel).
+26/10/19 14:34:09 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+
+Spark 4.2.0 · 20,000,000 click events in 8 partitions (generated + cached in 7.8s)
++---+-------+---+
+| id|user_id|day|
++---+-------+---+
+|  0|1916977|  0|
+|  1|1298470|  1|
+|  2|3465497|  2|
+|  3| 346445|  3|
+|  4|2246421|  4|
++---+-------+---+
+only showing top 5 rows
+
+==============================================================================
+4a · exact answer: COUNT(DISTINCT user_id)
+==============================================================================
+every distinct id must be shuffled across the cluster and deduplicated …
+
+  exact distinct users = 4,699,174      time 11.3s
+
+==============================================================================
+4b · part 3 again, in Spark: one sketch per partition, then merge
+==============================================================================
+  hll_sketch_agg      = build a sketch        (our  h.add)
+  hll_union_agg       = merge sketches        (our  element-wise max)
+  hll_sketch_estimate = sketch → number       (our  α·m²/Σ2^-M)
+
+Warning: Java versions > Java 11 can only operate in restricted mode where no off-heap operations are allowed!
++---------+-------+---------------------+------------+
+|partition|   rows|distinct_in_partition|sketch_bytes|
++---------+-------+---------------------+------------+
+|        0|2500000|              1757481|        4136|
+|        1|2500000|              1747896|        4136|
+|        2|2500000|              1785373|        4136|
+|        3|2500000|              1727134|        4136|
+|        4|2500000|              1776522|        4136|
+|        5|2500000|              1756922|        4136|
+|        6|2500000|              1781173|        4136|
+|        7|2500000|              1732260|        4136|
++---------+-------+---------------------+------------+
+
+  merge of 8 partition sketches    =    4,760,085
+  one sketch over all rows         =    4,760,085   ← identical: merging loses nothing
+  exact                            =    4,699,174   → error +1.30%
+  adding per-partition estimates   =   14,064,761   ← +199%: counts don't add
+
+==============================================================================
+4c · accuracy vs memory  (K = 2^lgConfigK registers; theory 1.04/√K)
+==============================================================================
+  lgConfigK  registers     sketch     estimate    error   theory    time
+          8        256      296 B    5,168,158   +9.98%    6.50%    0.7s
+         10      1,024    1,064 B    4,802,234   +2.19%    3.25%    0.7s
+         12      4,096    4,136 B    4,760,085   +1.30%    1.62%    0.8s
+         14     16,384   16,424 B    4,683,456   -0.33%    0.81%    0.9s
+         16     65,536   65,576 B    4,688,200   -0.23%    0.41%    0.8s
+      exact               all ids    4,699,174                     11.3s
+
+  4× the registers → about half the error, as the paper predicts.
+
+==============================================================================
+4d · in practice: approx_count_distinct, and stored daily sketches
+==============================================================================
+  approx_count_distinct(rsd=1%) = 4,678,210   error -0.45%   time 3.7s  (exact 11.3s)
++---+---------+---------------+-----+
+|day|exact_dau|sketch_estimate|bytes|
++---+---------+---------------+-----+
+|  0|  1931342|        1922281| 4136|
+|  1|  1931181|        1888315| 4136|
+|  2|  1931654|        1960634| 4136|
+|  3|  1932596|        1955629| 4136|
+|  4|  1932011|        1971614| 4136|
+|  5|  1931262|        1968340| 4136|
+|  6|  1931800|        1865384| 4136|
++---+---------+---------------+-----+
+
+  weekly uniques   exact 4,699,174   ·   merge of 7 stored daily sketches 4,760,085 (+1.30%)
+  sum of the 7 exact daily counts = 13,521,846 (+188%)  ← wrong
+  → store one small sketch per day; any date range is a merge, no rescan of raw data.
+
+real	1m37.731s
+user	0m0.559s
+sys	0m0.106s
